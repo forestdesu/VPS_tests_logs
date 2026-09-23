@@ -2,7 +2,7 @@
   {
     "url": "http://2.26.10.175:8000/health",
     "status": 200,
-    "elapsed_ms": 581.38,
+    "elapsed_ms": 538.35,
     "error": null,
     "body": {
       "status": "ok"
@@ -11,7 +11,7 @@
   {
     "url": "http://2.26.10.175:8000/health",
     "status": 200,
-    "elapsed_ms": 522.42,
+    "elapsed_ms": 533.0,
     "error": null,
     "body": {
       "status": "ok"
@@ -20,7 +20,7 @@
   {
     "url": "http://2.26.10.175:8000/lookups",
     "status": 200,
-    "elapsed_ms": 613.88,
+    "elapsed_ms": 527.55,
     "error": null,
     "body": {
       "rarities": [
@@ -238,7 +238,7 @@
   {
     "url": "http://2.26.10.175:8000/lookups",
     "status": 200,
-    "elapsed_ms": 547.84,
+    "elapsed_ms": 554.94,
     "error": null,
     "body": {
       "rarities": [
@@ -456,7 +456,7 @@
   {
     "url": "http://2.26.10.175:8000/lookups",
     "status": 200,
-    "elapsed_ms": 546.32,
+    "elapsed_ms": 542.08,
     "error": null,
     "body": {
       "rarities": [
@@ -674,7 +674,7 @@
   {
     "url": "http://2.26.10.175:8000/items",
     "status": 200,
-    "elapsed_ms": 575.35,
+    "elapsed_ms": 562.06,
     "error": null,
     "body": {
       "items": [
@@ -1362,7 +1362,7 @@
   {
     "url": "http://2.26.10.175:8000/items",
     "status": 200,
-    "elapsed_ms": 573.02,
+    "elapsed_ms": 552.17,
     "error": null,
     "body": {
       "items": [
@@ -2050,7 +2050,7 @@
   {
     "url": "http://2.26.10.175:8000/items",
     "status": 200,
-    "elapsed_ms": 571.88,
+    "elapsed_ms": 588.03,
     "error": null,
     "body": {
       "items": [
@@ -2738,7 +2738,7 @@
   {
     "url": "http://2.26.10.175:8000/items?page=1&page_size=5",
     "status": 200,
-    "elapsed_ms": 542.69,
+    "elapsed_ms": 562.18,
     "error": null,
     "body": {
       "items": [
@@ -2821,7 +2821,7 @@
   {
     "url": "http://2.26.10.175:8000/items?page_size=9999",
     "status": 200,
-    "elapsed_ms": 560.42,
+    "elapsed_ms": 536.94,
     "error": null,
     "body": {
       "items": [
@@ -3509,7 +3509,7 @@
   {
     "url": "http://2.26.10.175:8000/items/search?q=",
     "status": 200,
-    "elapsed_ms": 541.08,
+    "elapsed_ms": 526.21,
     "error": null,
     "body": {
       "items": [],
@@ -3522,7 +3522,7 @@
   {
     "url": "http://2.26.10.175:8000/items/search?q=меч",
     "status": 200,
-    "elapsed_ms": 526.51,
+    "elapsed_ms": 536.58,
     "error": null,
     "body": {
       "items": [
@@ -3588,7 +3588,7 @@
   {
     "url": "http://2.26.10.175:8000/items?page_size=1",
     "status": 200,
-    "elapsed_ms": 541.79,
+    "elapsed_ms": 543.73,
     "error": null,
     "body": {
       "items": [
@@ -3615,7 +3615,7 @@
   {
     "url": "http://2.26.10.175:8000/items/45",
     "status": 200,
-    "elapsed_ms": 562.87,
+    "elapsed_ms": 544.16,
     "error": null,
     "body": {
       "id": 45,
@@ -3741,7 +3741,7 @@
   {
     "url": "http://2.26.10.175:8000/items/99999999",
     "status": 404,
-    "elapsed_ms": 530.33,
+    "elapsed_ms": 511.38,
     "error": null,
     "body": {
       "detail": "Предмет не найден"
@@ -3750,14 +3750,14 @@
   {
     "url": "http://2.26.10.175:8000/docs",
     "status": 200,
-    "elapsed_ms": 519.8,
+    "elapsed_ms": 521.98,
     "error": null,
     "body": "\n    <!DOCTYPE html>\n    <html>\n    <head>\n    <link type=\"text/css\" rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css\">\n    <link rel=\"shortcut icon\" href=\"https://fastapi.tiangolo.com/img/favicon.png\">\n    <title>Items API - Swagger UI</title>\n    </head>\n    <body>\n    <div id=\"swagger-ui\">\n    </div>\n    <script src=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js\"></script>\n    <!-- `SwaggerUIBundle` is now available on the page -->\n    <script>\n    const ui = SwaggerUIBundle({\n        url: '/openapi.json',\n    \"dom_id\": \"#swagger-ui\",\n\"layout\": \"BaseLayout\",\n\"deepLinking\": true,\n\"showExtensions\": true,\n\"showCommonExtensions\": true,\noauth2RedirectUrl: window.location.origin + '/docs/oauth2-redirect',\n    presets: [\n        SwaggerUIBundle.presets.apis,\n        SwaggerUIBundle.SwaggerUIStandalonePreset\n        ],\n    })\n    </script>\n    </body>\n    </html>\n    "
   },
   {
     "url": "http://2.26.10.175:8000/openapi.json",
     "status": 200,
-    "elapsed_ms": 660.49,
+    "elapsed_ms": 783.34,
     "error": null,
     "body": {
       "openapi": "3.1.0",
@@ -4536,6 +4536,23 @@
           "get": {
             "summary": "Get Logs",
             "operationId": "get_logs_logs_get",
+            "responses": {
+              "200": {
+                "description": "Successful Response",
+                "content": {
+                  "application/json": {
+                    "schema": {}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "/logs/optimized": {
+          "get": {
+            "summary": "Get Logs Optimized",
+            "description": "Оптимизированный обработчик: O(N) вместо O(N²).",
+            "operationId": "get_logs_optimized_logs_optimized_get",
             "responses": {
               "200": {
                 "description": "Successful Response",
@@ -5471,7 +5488,7 @@
   {
     "url": "http://2.26.10.175:8000/logs",
     "status": 200,
-    "elapsed_ms": 567.99,
+    "elapsed_ms": 531.43,
     "error": null,
     "body": {
       "logs": [
@@ -5484,6 +5501,24 @@
         "",
         "=== ERROR ===",
         "User 2: created=0, updated=0, deleted=0"
+      ]
+    }
+  },
+  {
+    "url": "http://2.26.10.175:8000/logs/optimized",
+    "status": 200,
+    "elapsed_ms": 514.52,
+    "error": null,
+    "body": {
+      "logs": [
+        "2026-09-23 04:49:54 - 2 - INSERT - 53 - OK",
+        "2026-09-23 05:02:24 - 2 - UPDATE - 45 - OK"
+      ],
+      "result": [
+        "=== SUCCESS ===",
+        "User 2: created=1, updated=1, deleted=0",
+        "",
+        "=== ERROR ==="
       ]
     }
   }

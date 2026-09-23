@@ -119,8 +119,17 @@ def test_openapi_schema(api_get):
     assert "/logs" in data["paths"]
 
 
-def test_logs_public(api_get):
+def test_logs(api_get):
     r = api_get("/logs")
+    assert r.status_code == 200
+    data = r.json()
+    assert "logs" in data
+    assert "result" in data
+    assert isinstance(data["logs"], list)
+    assert isinstance(data["result"], list)
+
+def test_logs_optimized(api_get):
+    r = api_get("/logs/optimized")
     assert r.status_code == 200
     data = r.json()
     assert "logs" in data
