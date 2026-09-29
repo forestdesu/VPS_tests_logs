@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query, Depends, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import hashlib
 import io
 from minio import Minio
@@ -43,13 +43,11 @@ MINIO_BUCKET = os.getenv("MINIO_BUCKET", "item-images")
 
 minio_client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
 
-MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_IMAGES_PER_ITEM = 5
 MIN_IMAGE_SIDE = 300
-MAX_IMAGE_SIDE = 3200
-FULL_QUALITY = 85
-THUMBNAIL_SIZE = (100, 200)
-THUMBNAIL_QUALITY = 60
+FULL_QUALITY = 90
+THUMBNAIL_SIZE = (280, 420)
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 _PUBLIC_READ_POLICY = """{
@@ -68,6 +66,19 @@ def _encode_webp(img: PILImage.Image, quality: int) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="WEBP", quality=quality)
     return buf.getvalue()
+
+# def _center_crop_to_ratio(img: PILImage.Image, target_w: int, target_h: int) -> PILImage.Image:
+#     target_ratio = target_w / target_h
+#     src_ratio = img.width / img.height
+#     if src_ratio > target_ratio:
+#         new_width = int(img.height * target_ratio)
+#         left = (img.width - new_width) // 2
+#         box = (left, 0, left + new_width, img.height)
+#     else:
+#         new_height = int(img.width / target_ratio)
+#         top = (img.height - new_height) // 2
+#         box = (0, top, img.width, top + new_height)
+#     return img.crop(box)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -99,18 +110,25 @@ class UserOut(BaseModel):
     name: str | None = None
     email: str | None = None
     img: str | None = None
+    is_staff: bool = False
+    created_at: datetime
 
+class UserPublicOut(BaseModel):
+    id: int
+    name: str | None = None
+    img: str | None = None
+    created_at: datetime
 
 class AuthResponse(BaseModel):
     token: str
     user: UserOut
 
-FIND_USER_BY_SUB_QUERY = "SELECT id, name, email, img FROM users WHERE google_sub = $1;"
+FIND_USER_BY_SUB_QUERY = "SELECT id, name, email, img, created_at FROM users WHERE google_sub = $1;"
 
 INSERT_USER_QUERY = """
 INSERT INTO users (google_sub, name, email, img)
 VALUES ($1, $2, $3, $4)
-RETURNING id, name, email, img;
+RETURNING id, name, email, img, created_at;
 """
 
 def _verify_google_token(token: str) -> dict:
@@ -160,10 +178,17 @@ async def auth_login(body: GoogleLoginRequest):
         raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
 
     token = _create_jwt(row["id"])
-    return AuthResponse(token=token, user=UserOut(**dict(row)))
+    async with app.state.pool.acquire() as conn:  # НОВОЕ
+        staff_role = await conn.fetchval(STAFF_ROLE_QUERY, row["id"])
+    return AuthResponse(token=token, user=UserOut(**dict(row), is_staff=staff_role is not None))
 
 
-ME_QUERY = "SELECT id, name, email, img FROM users WHERE id = $1;"
+ME_QUERY = """
+SELECT u.id, u.name, u.email, u.img, u.created_at, (s.role IS NOT NULL) AS is_staff
+FROM users u
+LEFT JOIN staff s ON s.user_id = u.id
+WHERE u.id = $1;
+"""
 
 @app.get("/auth/me", response_model=UserOut)
 async def auth_me(user_id: int = Depends(get_current_user_id)):
@@ -221,11 +246,19 @@ class PaginatedMyItems(BaseModel):
     total_count: int
     total_pages: int
 
+class UserProfileOut(BaseModel):
+    user: UserPublicOut
+    items: PaginatedMyItems
+
 class DamageRowIn(BaseModel):
     damage_type_ids: list[int] = []
     dice_multi: int | None = None
     dice_id: int | None = None
     dmg_const: int | None = None
+
+class RangeIn(BaseModel):
+    min_range: int = Field(ge=0)
+    max_range: int = Field(ge=0)
 
 class ItemCreateRequest(BaseModel):
     name: str
@@ -233,12 +266,15 @@ class ItemCreateRequest(BaseModel):
     icon: str | None = None
     rarity_id: int
     price: int = 0
-    weight: float | None = None
+    weight: float | None = Field(default=None, ge=0)
     item_type_id: int | None = None
     special_type_ids: list[int] = []
     one_handed_damages: list[DamageRowIn] = []
     two_handed_damages: list[DamageRowIn] = []
     ammo_item_ids: list[int] = []
+    ammo_damages: list[DamageRowIn] = []
+    ammo_range: RangeIn | None = None
+    thrown_range: RangeIn | None = None
 
 
 class ItemCreateResponse(BaseModel):
@@ -283,6 +319,7 @@ class ItemDetail(BaseModel):
     spells: list[dict]
     special_types: list[dict]
     images: list[dict]
+    authors: list[dict]
 
 class ItemUpdateRequest(BaseModel):
     name: str
@@ -290,16 +327,37 @@ class ItemUpdateRequest(BaseModel):
     icon: str | None = None
     rarity_id: int
     price: int = 0
-    weight: float | None = None
+    weight: float | None = Field(default=None, ge=0)
     special_type_ids: list[int] = []
     one_handed_damages: list[DamageRowIn] = []
     two_handed_damages: list[DamageRowIn] = []
     ammo_item_ids: list[int] = []
+    ammo_damages: list[DamageRowIn] = []
+    ammo_range: RangeIn | None = None
+    thrown_range: RangeIn | None = None
 
 
 class ItemUpdateResponse(BaseModel):
     id: int
     status: int
+
+class GroupOut(BaseModel):
+    id: int
+    name: str
+    is_base: bool
+    already_added: bool = False
+
+class CreateGroupRequest(BaseModel):
+    name: str
+
+class RenameGroupRequest(BaseModel):
+    name: str
+
+class ReorderGroupsRequest(BaseModel):
+    group_ids: list[int]
+
+class AddToGroupsRequest(BaseModel):
+    group_ids: list[int]
 
 
 
@@ -456,6 +514,8 @@ ORDER BY i.name
 LIMIT $2 OFFSET $3;
 """
 
+USER_PROFILE_QUERY = "SELECT id, name, img, created_at FROM users WHERE id = $1;"
+
 INSERT_ITEM_QUERY = """
 INSERT INTO items (name, description, icon, rarity_id, price, weight)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -488,6 +548,16 @@ INSERT INTO weapons_and_ammos (weapon_item_id, ammo_item_id)
 VALUES ($1, $2);
 """
 
+INSERT_AMMO_DAMAGE_QUERY = """
+INSERT INTO weapons_ammos (item_id, damage_type_id, sort_order, dice_multi, dice_id, dmg_const)
+VALUES ($1, $2, $3, $4, $5, $6);
+"""
+
+INSERT_RANGE_QUERY = """
+INSERT INTO weapons_and_ranges (item_id, is_ammunition, min_range, max_range)
+VALUES ($1, $2, $3, $4);
+"""
+
 INSERT_USER_ITEM_QUERY = """
 INSERT INTO users_and_items (user_id, item_id, status)
 VALUES ($1, $2, 0)
@@ -495,22 +565,29 @@ RETURNING status;
 """
 
 CHECK_OWNERSHIP_QUERY = "SELECT 1 FROM users_and_items WHERE user_id = $1 AND item_id = $2;"
+STAFF_ROLE_QUERY = "SELECT role FROM staff WHERE user_id = $1;"
 
 DELETE_ITEM_QUERY = "DELETE FROM items WHERE id = $1;"
 
 UPDATE_ITEM_QUERY = """
-UPDATE items SET name = $2, description = $3, icon = $4, rarity_id = $5, price = $6, weight = $7
+UPDATE items SET name = $2, description = $3, rarity_id = $4, price = $5, weight = $6
 WHERE id = $1;
 """
 
 DELETE_SPECIAL_TYPES_QUERY = "DELETE FROM weapons_and_special_types WHERE item_id = $1;"
 DELETE_HANDS_QUERY = "DELETE FROM weapons_and_hands WHERE item_id = $1;"
 DELETE_WEAPON_AMMO_QUERY = "DELETE FROM weapons_and_ammos WHERE weapon_item_id = $1;"
+DELETE_AMMO_DAMAGE_QUERY = "DELETE FROM weapons_ammos WHERE item_id = $1;"
+DELETE_RANGES_QUERY = "DELETE FROM weapons_and_ranges WHERE item_id = $1;"
 
 RESET_STATUS_QUERY = """
 UPDATE users_and_items SET status = 0 WHERE user_id = $1 AND item_id = $2
 RETURNING status;
 """
+
+GET_ITEM_STATUS_QUERY = "SELECT status FROM users_and_items WHERE item_id = $1 LIMIT 1;"
+
+
 
 MAX_PAGE_SIZE = 100
 
@@ -668,7 +745,7 @@ ORDER BY wh.id, whd.sort_order, dt.name;
 """
 
 RANGES_QUERY = """
-SELECT range_type, min_range, max_range
+SELECT is_ammunition, min_range, max_range
 FROM weapons_and_ranges
 WHERE item_id = $1
 ORDER BY id;
@@ -744,6 +821,86 @@ WHERE wst.item_id = $1
 ORDER BY st.name;
 """
 
+AUTHORS_QUERY = """
+SELECT
+    u.id,
+    u.name,
+    u.img,
+    (SELECT COUNT(*) FROM users_and_items uai2 WHERE uai2.user_id = u.id) AS works_count
+FROM users_and_items uai
+JOIN users u ON u.id = uai.user_id
+WHERE uai.item_id = $1
+ORDER BY u.name;
+"""
+
+MY_GROUPS_QUERY = """
+SELECT
+    ug.id,
+    ug.name,
+    ug.user_id IS NULL AS is_base,
+    EXISTS(
+        SELECT 1 FROM group_and_subscription gs
+        WHERE gs.group_id = ug.id AND gs.item_id = $2
+    ) AS already_added
+FROM users_group ug
+WHERE ug.user_id = $1 OR ug.user_id IS NULL
+ORDER BY ug."order";
+"""
+
+CREATE_GROUP_QUERY = """
+INSERT INTO users_group (user_id, name, "order")
+VALUES ($1, $2, (SELECT COALESCE(MAX("order"), -1) + 1 FROM users_group WHERE user_id = $1))
+RETURNING id, name;
+"""
+
+RENAME_GROUP_QUERY = """
+UPDATE users_group SET name = $3 WHERE id = $1 AND user_id = $2
+RETURNING id;
+"""
+
+DELETE_GROUP_QUERY = "DELETE FROM users_group WHERE id = $1 AND user_id = $2 RETURNING id;"
+
+REORDER_GROUP_QUERY = 'UPDATE users_group SET "order" = $3 WHERE id = $1 AND user_id = $2;'
+
+GROUP_OWNER_QUERY = "SELECT user_id FROM users_group WHERE id = $1;"
+
+GROUP_ITEMS_QUERY = """
+SELECT
+    i.id, i.name, i.icon, r.name AS rarity, i.price,
+    COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS types,
+    COALESCE(array_agg(DISTINCT wst.name) FILTER (WHERE wst.name IS NOT NULL), '{}') AS special_types,
+    COUNT(*) OVER() AS total_count
+FROM group_and_subscription gs
+JOIN items i ON i.id = gs.item_id
+LEFT JOIN rarities r ON r.id = i.rarity_id
+LEFT JOIN items_and_types iat ON iat.item_id = i.id
+LEFT JOIN items_type t ON t.id = iat.item_type_id
+LEFT JOIN weapons_and_special_types wast ON wast.item_id = i.id
+LEFT JOIN weapons_special_types wst ON wst.id = wast.special_type_id
+WHERE gs.group_id = $1
+    AND ($2::text IS NULL OR i.name ILIKE '%' || $2 || '%')
+GROUP BY i.id, i.name, i.icon, r.name, i.price
+ORDER BY i.name
+LIMIT $3 OFFSET $4;
+"""
+
+DELETE_GROUP_ITEM_QUERY = """
+DELETE FROM group_and_subscription
+WHERE group_id = $1 AND item_id = $2
+RETURNING id;
+"""
+
+CHECK_GROUP_OWNERSHIP_QUERY = "SELECT 1 FROM users_group WHERE id = $1 AND user_id = $2;"
+
+
+ADD_ITEM_TO_GROUP_QUERY = """
+INSERT INTO group_and_subscription (group_id, item_id)
+VALUES ($1, $2)
+ON CONFLICT (group_id, item_id) DO NOTHING;
+"""
+
+
+
 
 @app.get("/items/{item_id}", response_model=ItemDetail)
 async def get_item(item_id: int):
@@ -764,6 +921,7 @@ async def get_item(item_id: int):
             spells = await conn.fetch(SPELLS_QUERY, item_id)
             special_types = await conn.fetch(SPECIAL_TYPES_QUERY, item_id)
             images = await conn.fetch(IMAGES_QUERY, item_id)
+            authors = await conn.fetch(AUTHORS_QUERY, item_id)
     except asyncpg.PostgresError as e:
         raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
 
@@ -793,21 +951,21 @@ async def get_item(item_id: int):
         actives=[dict(r) for r in actives],
         spells=[dict(r) for r in spells],
         special_types=[dict(r) for r in special_types],
-        images=[{"id": r["id"], "url": _image_url(r["object_key"]), "sort_order": r["sort_order"]} for r in images]
+        images=[{"id": r["id"], "url": _image_url(r["object_key"]), "sort_order": r["sort_order"]} for r in images],
+        authors=[dict(r) for r in authors],
     )
 
-@app.get("/users/me/items", response_model=PaginatedMyItems)
-async def get_my_items(
-    page: int = 1,
-    page_size: int = 100,
-    user_id: int = Depends(get_current_user_id),
-):
+@app.get("/users/{user_id}", response_model=UserProfileOut)
+async def get_user_profile(user_id: int, page: int = 1, page_size: int = 100):
     page = max(1, page)
     page_size = max(1, min(page_size, MAX_PAGE_SIZE))
     offset = (page - 1) * page_size
 
     try:
         async with app.state.pool.acquire() as conn:
+            user_row = await conn.fetchrow(USER_PROFILE_QUERY, user_id)
+            if user_row is None:
+                raise HTTPException(status_code=404, detail="Пользователь не найден")
             rows = await conn.fetch(MY_ITEMS_QUERY, user_id, page_size, offset)
     except asyncpg.PostgresError as e:
         raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
@@ -815,16 +973,16 @@ async def get_my_items(
     total_count = rows[0]["total_count"] if rows else 0
     total_pages = (total_count + page_size - 1) // page_size if total_count else 0
 
-    return PaginatedMyItems(
-        items=[
-            MyItemEntry(id=r["id"], name=r["name"], icon=_icon_url(r["icon"]), rarity=r["rarity"], price=r["price"],
-                        status=r["status"])
-            for r in rows
-        ],
-        page=page,
-        page_size=page_size,
-        total_count=total_count,
-        total_pages=total_pages,
+    return UserProfileOut(
+        # img в users — это готовый URL с Google, а не ключ MinIO, поэтому _icon_url тут не нужен
+        user=UserPublicOut(id=user_row["id"], name=user_row["name"], img=user_row["img"], created_at=user_row["created_at"]),
+        items=PaginatedMyItems(
+            items=[
+                MyItemEntry(id=r["id"], name=r["name"], icon=_icon_url(r["icon"]), rarity=r["rarity"], price=r["price"], status=r["status"])
+                for r in rows
+            ],
+            page=page, page_size=page_size, total_count=total_count, total_pages=total_pages,
+        ),
     )
 
 
@@ -860,6 +1018,20 @@ async def create_item(body: ItemCreateRequest, user_id: int = Depends(get_curren
                 for ammo_item_id in body.ammo_item_ids:
                     await conn.execute(INSERT_WEAPON_AMMO_QUERY, item_id, ammo_item_id)
 
+                for sort_order, row in enumerate(body.ammo_damages):
+                    for damage_type_id in row.damage_type_ids:
+                        await conn.execute(
+                            INSERT_AMMO_DAMAGE_QUERY,
+                            item_id, damage_type_id, sort_order, row.dice_multi, row.dice_id, row.dmg_const,
+                        )
+
+                if body.ammo_range is not None:
+                    await conn.execute(INSERT_RANGE_QUERY, item_id, True, body.ammo_range.min_range,
+                                       body.ammo_range.max_range)
+                if body.thrown_range is not None:
+                    await conn.execute(INSERT_RANGE_QUERY, item_id, False, body.thrown_range.min_range,
+                                       body.thrown_range.max_range)
+
                 link_row = await conn.fetchrow(INSERT_USER_ITEM_QUERY, user_id, item_id)
     except asyncpg.PostgresError as e:
         log_change(user_id=user_id, action="INSERT", row_id=item_id or 0, status="ERROR")
@@ -874,8 +1046,10 @@ async def delete_item(item_id: int, user_id: int = Depends(get_current_user_id))
         async with app.state.pool.acquire() as conn:
             owns = await conn.fetchval(CHECK_OWNERSHIP_QUERY, user_id, item_id)
             if not owns:
-                log_change(user_id=user_id, action="DELETE", row_id=item_id, status="ERROR")
-                raise HTTPException(status_code=403, detail="Вы не являетесь владельцем этого предмета")
+                staff_role = await conn.fetchval(STAFF_ROLE_QUERY, user_id)
+                if staff_role is None:
+                    log_change(user_id=user_id, action="DELETE", row_id=item_id, status="ERROR")
+                    raise HTTPException(status_code=403, detail="Вы не являетесь владельцем этого предмета")
             await conn.execute(DELETE_ITEM_QUERY, item_id)
     except asyncpg.PostgresError as e:
         log_change(user_id=user_id, action="DELETE", row_id=item_id, status="ERROR")
@@ -890,13 +1064,17 @@ async def update_item(item_id: int, body: ItemUpdateRequest, user_id: int = Depe
     try:
         async with app.state.pool.acquire() as conn:
             owns = await conn.fetchval(CHECK_OWNERSHIP_QUERY, user_id, item_id)
+            is_staff_edit = False
             if not owns:
-                log_change(user_id=user_id, action="UPDATE", row_id=item_id, status="ERROR")
-                raise HTTPException(status_code=403, detail="Вы не являетесь владельцем этого предмета")
+                staff_role = await conn.fetchval(STAFF_ROLE_QUERY, user_id)
+                if staff_role is None:
+                    log_change(user_id=user_id, action="UPDATE", row_id=item_id, status="ERROR")
+                    raise HTTPException(status_code=403, detail="Вы не являетесь владельцем этого предмета")
+                is_staff_edit = True
 
             async with conn.transaction():
                 await conn.execute(
-                    UPDATE_ITEM_QUERY, item_id, body.name, body.description, body.icon, body.rarity_id, body.price, body.weight
+                    UPDATE_ITEM_QUERY, item_id, body.name, body.description, body.rarity_id, body.price, body.weight
                 )
 
                 await conn.execute(DELETE_SPECIAL_TYPES_QUERY, item_id)
@@ -920,7 +1098,27 @@ async def update_item(item_id: int, body: ItemUpdateRequest, user_id: int = Depe
                 for ammo_item_id in body.ammo_item_ids:
                     await conn.execute(INSERT_WEAPON_AMMO_QUERY, item_id, ammo_item_id)
 
-                status_row = await conn.fetchrow(RESET_STATUS_QUERY, user_id, item_id)
+                await conn.execute(DELETE_AMMO_DAMAGE_QUERY, item_id)
+                for sort_order, row in enumerate(body.ammo_damages):
+                    for damage_type_id in row.damage_type_ids:
+                        await conn.execute(
+                            INSERT_AMMO_DAMAGE_QUERY,
+                            item_id, damage_type_id, sort_order, row.dice_multi, row.dice_id, row.dmg_const,
+                        )
+
+                await conn.execute(DELETE_RANGES_QUERY, item_id)
+                if body.ammo_range is not None:
+                    await conn.execute(INSERT_RANGE_QUERY, item_id, True, body.ammo_range.min_range,
+                                       body.ammo_range.max_range)
+                if body.thrown_range is not None:
+                    await conn.execute(INSERT_RANGE_QUERY, item_id, False, body.thrown_range.min_range,
+                                       body.thrown_range.max_range)
+
+                if is_staff_edit:
+                    current_status = await conn.fetchval(GET_ITEM_STATUS_QUERY, item_id)
+                    status_row = {"status": current_status if current_status is not None else 0}
+                else:
+                    status_row = await conn.fetchrow(RESET_STATUS_QUERY, user_id, item_id)
 
     except asyncpg.PostgresError as e:
         log_change(user_id=user_id, action="UPDATE", row_id=item_id, status="ERROR")
@@ -936,7 +1134,7 @@ async def upload_item_image(item_id: int, file: UploadFile, user_id: int = Depen
 
     raw = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Файл больше 30 МБ")
+        raise HTTPException(status_code=413, detail="Файл больше 20 МБ")
 
     try:
         img = PILImage.open(io.BytesIO(raw))
@@ -950,13 +1148,13 @@ async def upload_item_image(item_id: int, file: UploadFile, user_id: int = Depen
     img = img.convert("RGB")
 
     full_img = img.copy()
-    full_img.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
     full_bytes = _encode_webp(full_img, FULL_QUALITY)
     object_key = hashlib.sha256(full_bytes).hexdigest()[:24] + ".webp"
 
+    #thumb_img = _center_crop_to_ratio(img, *THUMBNAIL_SIZE).resize(THUMBNAIL_SIZE, PILImage.LANCZOS)
     thumb_img = img.copy()
     thumb_img.thumbnail(THUMBNAIL_SIZE)
-    thumb_bytes = _encode_webp(thumb_img, THUMBNAIL_QUALITY)
+    thumb_bytes = _encode_webp(thumb_img, FULL_QUALITY)
     thumbnail_key = hashlib.sha256(thumb_bytes).hexdigest()[:24] + "_thumb.webp"
 
     try:
@@ -1012,6 +1210,140 @@ async def reorder_item_images(item_id: int, body: ReorderImagesRequest, user_id:
     except asyncpg.PostgresError as e:
         raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
     return {"status": "ok"}
+
+@app.get("/users/me/groups", response_model=list[GroupOut])
+async def get_my_groups(item_id: int | None = None, user_id: int = Depends(get_current_user_id)):
+    try:
+        async with app.state.pool.acquire() as conn:
+            rows = await conn.fetch(MY_GROUPS_QUERY, user_id, item_id)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+    return [GroupOut(**dict(r)) for r in rows]
+
+
+@app.post("/items/{item_id}/groups")
+async def add_item_to_groups(item_id: int, body: AddToGroupsRequest, user_id: int = Depends(get_current_user_id)):
+    try:
+        async with app.state.pool.acquire() as conn:
+            async with conn.transaction():
+                for group_id in body.group_ids:
+                    owns = await conn.fetchval(CHECK_GROUP_OWNERSHIP_QUERY, group_id, user_id)
+                    if not owns:
+                        raise HTTPException(status_code=403, detail="Группа не найдена")
+                    await conn.execute(ADD_ITEM_TO_GROUP_QUERY, group_id, item_id)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+    return {"status": "ok"}
+
+@app.post("/users/me/groups", response_model=GroupOut)
+async def create_group(body: CreateGroupRequest, user_id: int = Depends(get_current_user_id)):
+    try:
+        async with app.state.pool.acquire() as conn:
+            row = await conn.fetchrow(CREATE_GROUP_QUERY, user_id, body.name)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+    return GroupOut(id=row["id"], name=row["name"], is_base=False)
+
+
+@app.patch("/users/me/groups/reorder")
+async def reorder_groups(body: ReorderGroupsRequest, user_id: int = Depends(get_current_user_id)):
+    try:
+        async with app.state.pool.acquire() as conn:
+            async with conn.transaction():
+                for order, group_id in enumerate(body.group_ids):
+                    await conn.execute(REORDER_GROUP_QUERY, group_id, user_id, order)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+    return {"status": "ok"}
+
+
+@app.patch("/users/me/groups/{group_id}", response_model=GroupOut)
+async def rename_group(group_id: int, body: RenameGroupRequest, user_id: int = Depends(get_current_user_id)):
+    try:
+        async with app.state.pool.acquire() as conn:
+            row = await conn.fetchrow(RENAME_GROUP_QUERY, group_id, user_id, body.name)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    return GroupOut(id=row["id"], name=body.name, is_base=False)
+
+
+@app.delete("/users/me/groups/{group_id}")
+async def delete_group(group_id: int, user_id: int = Depends(get_current_user_id)):
+    try:
+        async with app.state.pool.acquire() as conn:
+            row = await conn.fetchrow(DELETE_GROUP_QUERY, group_id, user_id)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    return {"status": "deleted"}
+
+@app.get("/users/me/items", response_model=PaginatedMyItems)
+async def get_my_items(
+    page: int = 1,
+    page_size: int = 100,
+    user_id: int = Depends(get_current_user_id),
+):
+    page = max(1, page)
+    page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+    offset = (page - 1) * page_size
+
+    try:
+        async with app.state.pool.acquire() as conn:
+            rows = await conn.fetch(MY_ITEMS_QUERY, user_id, page_size, offset)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+
+    total_count = rows[0]["total_count"] if rows else 0
+    total_pages = (total_count + page_size - 1) // page_size if total_count else 0
+
+    return PaginatedMyItems(
+        items=[
+            MyItemEntry(id=r["id"], name=r["name"], icon=_icon_url(r["icon"]), rarity=r["rarity"], price=r["price"], status=r["status"])
+            for r in rows
+        ],
+        page=page, page_size=page_size, total_count=total_count, total_pages=total_pages,
+    )
+
+@app.get("/groups/{group_id}/items", response_model=PaginatedItems)
+async def get_group_items(group_id: int, page: int = 1, page_size: int = 100, q: str | None = None, user_id: int = Depends(get_current_user_id)):
+    page = max(1, page)
+    page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+    offset = (page - 1) * page_size
+    q = q.strip() if q else None
+
+    try:
+        async with app.state.pool.acquire() as conn:
+            group = await conn.fetchrow(GROUP_OWNER_QUERY, group_id)
+            if group is None:
+                raise HTTPException(status_code=404, detail="Группа не найдена")
+            if group["user_id"] is not None and group["user_id"] != user_id:
+                raise HTTPException(status_code=403, detail="Нет доступа к этой группе")
+            rows = await conn.fetch(GROUP_ITEMS_QUERY, group_id, q, page_size, offset)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+
+    total_count = rows[0]["total_count"] if rows else 0
+    total_pages = (total_count + page_size - 1) // page_size if total_count else 0
+    return PaginatedItems(items=_rows_to_items(rows), page=page, page_size=page_size, total_count=total_count, total_pages=total_pages)
+
+@app.delete("/groups/{group_id}/items/{item_id}")
+async def remove_group_item(group_id: int, item_id: int, user_id: int = Depends(get_current_user_id)):
+    try:
+        async with app.state.pool.acquire() as conn:
+            group = await conn.fetchrow(GROUP_OWNER_QUERY, group_id)
+            if group is None:
+                raise HTTPException(status_code=404, detail="Группа не найдена")
+            if group["user_id"] != user_id:
+                raise HTTPException(status_code=403, detail="Нет доступа к этой группе")
+            row = await conn.fetchrow(DELETE_GROUP_ITEM_QUERY, group_id, item_id)
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка базы данных: {e}")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Предмет не найден в группе")
+    return {"status": "deleted"}
 
 @app.get("/logs")
 async def get_logs():
